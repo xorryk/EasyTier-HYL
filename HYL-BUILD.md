@@ -4,7 +4,9 @@
 
 修复内容：FakeTCP 主动连接按远端地址选择 IPv4 或 IPv6 套接字及绑定地址，避免 Mac 连接 IPv6 对端时因错误地址族而报错 47。原作者及补丁来源保留在 Git 提交中。
 
-运行时内核版本包含 `-hyl.1`，GUI 窗口标题为 `EasyTier HYL - FakeTCP IPv6`。保留原应用标识、程序文件名及配置存储位置，以兼容现有配置。本构建不预置任何个人网络配置、域名、地址或密码。
+`-hyl.2` 还修复 macOS 原生 BPF 收包记录的对齐错误：使用 Darwin ABI 规定的 4 字节对齐，避免 8 字节对齐跳过下一条记录并丢弃同批后续数据。此修复仅改变 Mac 收包逻辑，Windows `-hyl.1` 仍可用于对照测试。
+
+运行时内核版本包含 `-hyl.2`，GUI 窗口标题为 `EasyTier HYL - FakeTCP IPv6`。保留原应用标识、程序文件名及配置存储位置，以兼容现有配置。本构建不预置任何个人网络配置、域名、地址或密码。
 
 ## 下载及文件选择
 
@@ -19,11 +21,11 @@
 
 ## 连接验证
 
-本补丁只修复 FakeTCP IPv6 建链，不会自动将已有 UDP/QUIC 连接切换为 FakeTCP，也不保证绕过运营商 QoS。
+本版本修复 FakeTCP IPv6 建链和 macOS 批量收包对齐，不会自动将已有 UDP/QUIC 连接切换为 FakeTCP，也不保证绕过运营商 QoS。
 
-保留虚拟 IPv4 地址。FakeTCP 对等节点仍使用可达的公网 IPv6/域名；建立连接后，应用可以继续访问原来的虚拟 IPv4。先确认运行版本带有 `-hyl.1`，再查看连接列表中的实际隧道协议和 FakeTCP 错误日志。
+保留虚拟 IPv4 地址。FakeTCP 对等节点仍使用可达的公网 IPv6/域名；建立连接后，应用可以继续访问原来的虚拟 IPv4。更新 Mac 后确认其运行版本带有 `-hyl.2`，再查看连接列表中的实际隧道协议和 FakeTCP 错误日志。
 
-CI 会在 Windows、Apple Silicon macOS、Intel macOS 上构建 Core/CLI/GUI，并运行补丁携带的 IPv4/IPv6 套接字测试。测试和打包成功后才发布下载。真实网络上的 Windows ↔ Mac FakeTCP 连接仍需在两端安装后验证。
+CI 会在 Windows、Apple Silicon macOS、Intel macOS 上构建 Core/CLI/GUI，并运行补丁携带的 IPv4/IPv6 套接字测试。在两种 Mac 上还验证系统 SDK 的 BPF ABI，运行批量记录解析回归测试，并复现旧对齐方式丢弃后续记录的情况。测试和打包成功后才发布下载。代码层面的回归测试不能替代实际串流验证，高码率黑屏是否解决仍需安装后测试。
 
 ## 复现和维护
 

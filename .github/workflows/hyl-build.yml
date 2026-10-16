@@ -96,6 +96,24 @@ jobs:
           --package easytier --features ${{ matrix.allocator }}
           --lib connector_uses_ -- --nocapture
 
+      - name: Verify Darwin BPF ABI and batched record parsing
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/hyl-bpf-abi.c" <<'EOF'
+          #include <net/bpf.h>
+          #include <stddef.h>
+          _Static_assert(BPF_ALIGNMENT == 4, "Darwin BPF alignment changed");
+          _Static_assert(BPF_WORDALIGN(98) == 100, "Darwin BPF record padding changed");
+          _Static_assert(offsetof(struct bpf_hdr, bh_caplen) == 8, "BPF timestamp layout changed");
+          _Static_assert(offsetof(struct bpf_hdr, bh_hdrlen) == 16, "BPF header layout changed");
+          int main(void) { return 0; }
+          EOF
+          clang -std=c11 -Wall -Werror "$RUNNER_TEMP/hyl-bpf-abi.c" -o "$RUNNER_TEMP/hyl-bpf-abi"
+          "$RUNNER_TEMP/hyl-bpf-abi"
+          cargo test --locked --target "$TARGET" --package easytier \
+            --features ${{ matrix.allocator }} --lib macos_bpf::tests -- --nocapture
+
       - name: Build Core and CLI
         run: >-
           cargo build --locked --release --target "$TARGET"

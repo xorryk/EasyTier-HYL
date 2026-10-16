@@ -32,10 +32,10 @@ def package(args):
     core = release_dir / ("easytier-core" + suffix)
     cli = release_dir / ("easytier-cli" + suffix)
     version = output(str(core), "--version")
-    if "-hyl.1" not in version:
+    if "-hyl.2" not in version:
         raise RuntimeError("Core binary is missing the HYL version marker")
     cli_version = output(str(cli), "--version")
-    if "-hyl.1" not in cli_version:
+    if "-hyl.2" not in cli_version:
         raise RuntimeError("CLI binary is missing the HYL version marker")
 
     prefix = f"EasyTier-HYL-{args.release}-{args.platform}"
@@ -74,7 +74,10 @@ def package(args):
         "rustc": output("rustc", "--version"),
         "github_run_id": os.environ.get("GITHUB_RUN_ID"),
         "signing": "unsigned" if suffix else "ad-hoc; not Apple notarized",
-        "validation": "IPv4 and IPv6 connector socket selection tests passed before packaging",
+        "validation": (
+            "IPv4 and IPv6 connector socket selection tests passed; "
+            + ("Darwin BPF ABI and batched parsing tests passed" if not suffix else "BPF fix is macOS-only")
+        ),
         "network_validation": "Real Windows-to-Mac FakeTCP connectivity still requires user testing",
         "files": {file.name: sha256(file) for file in (archive, installer)},
     }
@@ -91,7 +94,7 @@ def verify(directory):
         metadata = json.loads((directory / f"BUILD-INFO-{platform}.json").read_text(encoding="utf-8"))
         if metadata["platform"] != platform or metadata["upstream_nightly"] != NIGHTLY:
             raise RuntimeError(f"Unexpected build provenance for {platform}")
-        if metadata["upstream_patch"] != PATCH or "-hyl.1" not in metadata["core_version"]:
+        if metadata["upstream_patch"] != PATCH or "-hyl.2" not in metadata["core_version"]:
             raise RuntimeError(f"Missing patch or version marker for {platform}")
         source_commits.add(metadata["source_commit"])
         releases.add(metadata["release"])

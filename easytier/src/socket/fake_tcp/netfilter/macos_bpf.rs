@@ -145,6 +145,10 @@ fn read_u32_ne(bytes: &[u8]) -> u32 {
     u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
+// Darwin's net/bpf.h defines BPF_ALIGNMENT as sizeof(int32_t), including on
+// LP64. Using sizeof(c_long) skips four bytes of some following record headers.
+const BPF_RECORD_ALIGNMENT: usize = mem::size_of::<i32>();
+
 fn bpf_word_align_with(align: usize, x: usize) -> usize {
     (x + (align - 1)) & !(align - 1)
 }
@@ -895,7 +899,7 @@ impl MacosBpfTun {
             let mut wrap_fail_logs_left: u8 = 5;
             let mut bad_record_logs_left: u8 = 8;
             let mut shifted_record_logs_left: u8 = 8;
-            let align = mem::size_of::<libc::c_long>();
+            let align = BPF_RECORD_ALIGNMENT;
             while !stop_clone.load(AtomicOrdering::Relaxed) {
                 let n = unsafe {
                     libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
@@ -1118,5 +1122,95 @@ impl stack::Tun for MacosBpfTun {
 
     fn driver_type(&self) -> &'static str {
         "macos_bpf"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BPF_RECORD_ALIGNMENT, parse_bpf_record};
+
+    // Encode the Darwin ABI independently of the production alignment helper:
+    // timeval32, two u32 lengths, a u16 header length, then four-byte padding.
+    fn darwin_record(packet: &[u8], header_len: usize, pad: bool) -> Vec<u8> {
+        let mut record = vec![0u8; header_len];
+        record[0..4].copy_from_slice(&1_700_000_000u32.to_ne_bytes());
+        record[4..8].copy_from_slice(&123_456u32.to_ne_bytes());
+        record[8..12].copy_from_slice(&(packet.len() as u32).to_ne_bytes());
+        record[12..16].copy_from_slice(&(packet.len() as u32).to_ne_bytes());
+        record[16..18].copy_from_slice(&(header_len as u16).to_ne_bytes());
+        record.extend_from_slice(packet);
+        if pad {
+            while record.len() % 4 != 0 {
+                record.push(0);
+            }
+        }
+        record
+    }
+
+    fn decode_batch(batch: &[u8]) -> Vec<Vec<u8>> {
+        let mut offset = 0;
+        let mut packets = Vec::new();
+        while offset < batch.len() {
+            let window = &batch[offset..];
+            let (advance, range, header_len, _) =
+                parse_bpf_record(window, BPF_RECORD_ALIGNMENT).expect("valid Darwin BPF record");
+            assert_eq!(
+                range.start, header_len as usize,
+                "no resynchronization needed"
+            );
+            assert!(advance > 0);
+            packets.push(window[range].to_vec());
+            offset += advance;
+        }
+        packets
+    }
+
+    #[test]
+    fn bpf_batch_preserves_records_after_four_byte_boundary() {
+        let first = vec![0xa5; 80];
+        let second = vec![0x5a; 82];
+        let mut batch = darwin_record(&first, 18, true);
+        assert_eq!(batch.len(), 100); // Four-byte aligned, but not eight-byte aligned.
+        batch.extend(darwin_record(&second, 18, true));
+
+        // Reproduce the old LP64 behavior: it advances into the next header and
+        // the reader then abandons the rest of this read after parsing fails.
+        let (old_advance, _, _, _) = parse_bpf_record(&batch, 8).unwrap();
+        assert_eq!(old_advance, 104);
+        assert!(parse_bpf_record(&batch[old_advance..], 8).is_none());
+
+        assert_eq!(decode_batch(&batch), vec![first, second]);
+    }
+
+    #[test]
+    fn bpf_batch_preserves_mixed_packet_sizes_and_header_padding() {
+        // Include small control packets and near-MTU data, covering every
+        // possible remainder modulo eight for both Ethernet and raw headers.
+        for header_len in [18, 20] {
+            let mut packets = Vec::new();
+            let mut batch = Vec::new();
+            for length in (74..82).chain(1370..1378) {
+                let packet = vec![0xa5; length];
+                batch.extend(darwin_record(&packet, header_len, true));
+                packets.push(packet);
+            }
+            assert_eq!(decode_batch(&batch), packets);
+        }
+    }
+
+    #[test]
+    fn bpf_final_record_does_not_require_trailing_padding() {
+        let packet = vec![0xa5; 79];
+        let batch = darwin_record(&packet, 18, false);
+        assert_eq!(batch.len(), 97);
+        assert_eq!(decode_batch(&batch), vec![packet]);
+    }
+
+    #[test]
+    fn bpf_rejects_truncated_header_and_packet() {
+        let record = darwin_record(&[0xa5; 80], 18, false);
+        for length in 0..record.len() {
+            assert!(parse_bpf_record(&record[..length], BPF_RECORD_ALIGNMENT).is_none());
+        }
     }
 }
