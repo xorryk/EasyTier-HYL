@@ -73,6 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: hyl-release-${{ matrix.target }}
+          cache-on-failure: true
 
       - uses: actions/setup-python@v5
         with:
@@ -91,7 +92,7 @@ jobs:
 
       - name: Test IPv4 and IPv6 connector socket selection
         run: >-
-          cargo test --locked --release --target "$TARGET"
+          cargo test --locked --target "$TARGET"
           --package easytier --features ${{ matrix.allocator }}
           --lib connector_uses_ -- --nocapture
 
@@ -119,7 +120,7 @@ jobs:
         working-directory: easytier-gui
         env:
           APPLE_SIGNING_IDENTITY: '-'
-        run: pnpm tauri build --target "$TARGET" --bundles dmg -- --locked
+        run: pnpm tauri build --target "$TARGET" --bundles app,dmg -- --locked
 
       - name: Verify macOS app signature
         if: runner.os == 'macOS'
