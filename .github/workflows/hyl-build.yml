@@ -1,0 +1,166 @@
+name: HYL Windows and macOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [hyl-nightly-faketcp]
+    paths:
+      - '**'
+      - '!**/*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hyl-build-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HYL_NIGHTLY_SHA: 99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7
+  HYL_PATCH_SHA: 6649c35aea3769a7f1704a4ae1fe564e4f2077a9
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.platform }})
+    if: github.repository == 'xorryk/EasyTier-HYL'
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            allocator: mimalloc
+          - os: macos-15
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+            allocator: mimalloc
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
+            allocator: jemalloc
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+      HYL_PLATFORM: ${{ matrix.platform }}
+      HYL_RELEASE_TAG: hyl-nightly-20261017-r${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify nightly ancestry and patch provenance
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$HYL_NIGHTLY_SHA" HEAD
+          git log --format=%B "$HYL_NIGHTLY_SHA"..HEAD | grep -F "$HYL_PATCH_SHA"
+
+      - name: Prepare upstream build tools and frontend
+        uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ matrix.target }}
+          gui: true
+          pnpm: true
+          pnpm-build-filter: easytier-gui...
+          token: ${{ github.token }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: hyl-release-${{ matrix.target }}
+
+      - name: Check Rust formatting
+        run: |
+          rustup component add rustfmt
+          cargo fmt --all -- --check
+
+      - name: Test IPv4 and IPv6 connector socket selection
+        run: >-
+          cargo test --locked --release --target "$TARGET"
+          --package easytier --features ${{ matrix.allocator }}
+          --lib connector_uses_ -- --nocapture
+
+      - name: Build Core and CLI
+        run: >-
+          cargo build --locked --release --target "$TARGET"
+          --package easytier --features ${{ matrix.allocator }}
+          --bin easytier-core --bin easytier-cli
+
+      - name: Include Windows network drivers
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          find easytier/third_party/x86_64 -maxdepth 1 -type f \( -name '*.dll' -o -name '*.sys' \) -exec cp {} easytier-gui/src-tauri/ \;
+          test -f easytier-gui/src-tauri/WinDivert64.sys
+          test -f easytier-gui/src-tauri/wintun.dll
+
+      - name: Build Windows GUI installer
+        if: runner.os == 'Windows'
+        working-directory: easytier-gui
+        run: pnpm tauri build --target "$TARGET" --bundles nsis -- --locked
+
+      - name: Build macOS GUI DMG with ad-hoc signing
+        if: runner.os == 'macOS'
+        working-directory: easytier-gui
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+        run: pnpm tauri build --target "$TARGET" --bundles dmg -- --locked
+
+      - name: Verify macOS app signature
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "target/$TARGET/release/bundle/macos/easytier-gui.app"
+
+      - name: Package binaries and record provenance
+        run: >-
+          python script/hyl/package.py --target "$TARGET"
+          --platform "$HYL_PLATFORM" --release "$HYL_RELEASE_TAG"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: hyl-${{ matrix.platform }}
+          path: dist/hyl/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish verified personal build
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: hyl-nightly-20261017-r${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hyl-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify complete artifact set and calculate checksums
+        run: |
+          set -euo pipefail
+          python script/hyl/package.py --verify-directory release-assets
+          (cd release-assets && sha256sum * > SHA256SUMS.txt)
+
+      - name: Publish downloadable prerelease
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "EasyTier HYL - nightly + FakeTCP IPv6 (build $GITHUB_RUN_NUMBER)" \
+              --notes-file HYL-RELEASE-NOTES.md --prerelease
+          fi
