@@ -15,7 +15,6 @@
 - Windows 管理器 Pro：使用 `windows-x86_64-core.zip` 中的内核、CLI 和配套驱动文件。替换前停止对应网络服务，并备份旧程序；保留原配置。
 - Windows 官方 GUI：使用 `windows-x86_64-setup.exe`。
 - Apple Silicon Mac（M1/M2/M3/M4 等）：使用 `macos-aarch64.dmg`。
-- Intel Mac：使用 `macos-x86_64.dmg`。
 
 升级 Mac 前导出原配置并从菜单完全退出旧 GUI，再替换应用。本个人构建仅使用 ad-hoc 签名，没有官方 Apple Developer ID 签名及公证；macOS 可能要求在“系统设置 → 隐私与安全性”中手动允许打开。Windows GUI/可执行文件也未添加个人代码签名。
 
@@ -25,7 +24,7 @@
 
 保留虚拟 IPv4 地址。FakeTCP 对等节点仍使用可达的公网 IPv6/域名；建立连接后，应用可以继续访问原来的虚拟 IPv4。更新 Mac 后确认其运行版本带有 `-hyl.2`，再查看连接列表中的实际隧道协议和 FakeTCP 错误日志。
 
-CI 会在 Windows、Apple Silicon macOS、Intel macOS 上构建 Core/CLI/GUI，并运行补丁携带的 IPv4/IPv6 套接字测试。在两种 Mac 上还验证系统 SDK 的 BPF ABI，运行批量记录解析回归测试，并复现旧对齐方式丢弃后续记录的情况。测试和打包成功后才发布下载。代码层面的回归测试不能替代实际串流验证，高码率黑屏是否解决仍需安装后测试。
+CI 只在 Windows x64、Apple Silicon macOS 上构建 Core/CLI/GUI，并运行补丁携带的 IPv4/IPv6 套接字测试。在 Apple Silicon Mac 上还验证系统 SDK 的 BPF ABI，运行批量记录解析回归测试，并复现旧对齐方式丢弃后续记录的情况。测试和打包成功后才发布下载。代码层面的回归测试不能替代实际串流验证，高码率黑屏是否解决仍需安装后测试。
 
 ## 复现和维护
 

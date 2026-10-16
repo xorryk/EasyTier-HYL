@@ -12,7 +12,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 NIGHTLY = "99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7"
 PATCH = "6649c35aea3769a7f1704a4ae1fe564e4f2077a9"
-PLATFORMS = ("windows-x86_64", "macos-aarch64", "macos-x86_64")
+PLATFORMS = ("windows-x86_64", "macos-aarch64")
 
 
 def output(*args):
@@ -106,7 +106,7 @@ def verify(directory):
                 raise RuntimeError(f"Artifact missing or checksum mismatch: {name}")
     if len(source_commits) != 1 or len(releases) != 1:
         raise RuntimeError("Platform builds do not match the same source/release")
-    print("Verified three platform builds, six packages, and all recorded SHA-256 hashes.")
+    print("Verified two platform builds, four packages, and all recorded SHA-256 hashes.")
 
 
 def main():

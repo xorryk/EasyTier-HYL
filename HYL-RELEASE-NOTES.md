@@ -5,9 +5,9 @@
 - 保留 nightly 的其他更新。
 - Core/CLI 版本包含 `-hyl.2`；GUI 窗口标题含 `EasyTier HYL`。
 - Windows x64：Core/CLI ZIP（含驱动）及 GUI 安装程序。
-- Mac Apple Silicon / Intel：分别提供 GUI DMG 及 Core/CLI ZIP。
-- 三个平台的构建、IPv4/IPv6 套接字测试和包完整性检查通过后，才发布本版本。
-- 两种 Mac 架构额外检查系统 SDK 的 BPF ABI，并运行批量记录、混合包长、末尾无填充及截断数据测试；测试中复现旧 8 字节对齐造成后续记录无法解析的问题。
+- Apple Silicon Mac：提供 GUI DMG 及 Core/CLI ZIP。
+- 两个平台的构建、IPv4/IPv6 套接字测试和包完整性检查通过后，才发布本版本。
+- Apple Silicon Mac 额外检查系统 SDK 的 BPF ABI，并运行批量记录、混合包长、末尾无填充及截断数据测试；测试中复现旧 8 字节对齐造成后续记录无法解析的问题。
 - 本次运行逻辑修改仅涉及 macOS；现有 `-hyl.1` Windows 内核可继续用于对照测试。
 
 Mac 应用使用 ad-hoc 签名，未经 Apple 公证；Windows 程序未添加代码签名。安装前导出配置并退出旧程序，按系统提示允许个人构建。程序标识及配置存储位置保持兼容。
