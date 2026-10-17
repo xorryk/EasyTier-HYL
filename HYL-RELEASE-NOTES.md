@@ -1,26 +1,20 @@
-macOS 原生 FakeTCP 新增可调接收缓冲。此前 BPF 沿用系统的 4 KiB 默认值，突发收包可能溢出；本版保留至少申请 512 KiB 的默认行为，同时允许在高级设置中调节，便于比较不同大小下的丢包与延迟。
+这是用于验证 FakeTCP 异常断连的 **hyl.5-test.1 测试版**。自动化检查通过后发布；实际串流稳定性尚待对照测试，不替代现有 hyl.4。
 
-GUI 高级设置新增 **FakeTCP 接收缓冲（KiB，macOS）**。也可在 TOML 现有 `[flags]` 中添加：
+以 hyl.4 源码 `1624c81d9f47e841fcb6828958874037194eb476` 为固定基线，适配上游 [PR #2243](https://github.com/EasyTier/EasyTier/pull/2243) 在 `4c0a313ad15d0d12c91999648c96cdb489dd7c1b` 的改动：
 
-```toml
-faketcp_bpf_recv_buffer_kib = 1024
-```
+- 从握手捕获初始 TCP 状态，避免把 FakeTCP 数据接收进度写入系统 TCP 的 ACK。
+- 接收时过滤全零填充包，防止填充内容进入 EasyTier 帧解析器并触发 `body too short`。
+- 修正 SACK 序号回绕判断，保留必要的填充行为。
+- 为握手缓存设置到期清理，并保留原来的真实断线、重置和异常帧关闭逻辑。
 
-- `512` = 512 KiB；`1024` = 1 MiB；`2048` = 2 MiB。范围为 64–32768 KiB。
-- 留空或删除该项：申请至少 512 KiB，并保留更大的系统默认值。
-- 明确填写：申请该大小，包括缩小已有默认值；内核可能限制或拒绝申请。
-- 保存并停止、重新启动这条网络后生效；不需要为每个数值重新构建。
-- 仅影响本机原生 macOS FakeTCP。Windows、其他隧道协议及系统全局 `sysctl` 不受该设置影响。
-- 保留立即读取模式。日志记录申请值和内核实际值；读取缓冲按实际值分配，避免大小不符导致读取失败。
+新增轻量验证日志：`zero_filler_dropped`、`sack_filler_sent`、`peer_reset`。计数在 1、2、4、8……次时输出，关闭连接时输出准确汇总；不保存数据包内容，不逐包写日志。收包解析错误额外带上连接 ID、对端 ID，便于与直连消失的时间对齐。请按验证说明临时启用 warning 日志，测试后恢复原级别。
 
-运行 `netstat -B` 核对 EasyTier 行的 `Bsize`：1 MiB 应显示 `1048576`，2 MiB 应显示 `2097152`。仅填写数值不能证明已经生效；若受限，日志会警告。BPF 描述符可能在第一次 FakeTCP 连接建立时才创建。
+只构建 Windows x64、Apple Silicon Mac。Windows 管理器 Pro 使用 `windows-x86_64-core.zip`；Windows 官方 GUI 使用 `windows-x86_64-setup.exe`；Apple Silicon Mac 使用 `macos-aarch64.dmg`。不构建 Intel Mac。
 
-建议先比较 512 KiB、1 MiB、2 MiB，使用相同的分辨率、帧率、编码和持续动态场景。每档重复测量，观察 `RDrop` 增量、Moonlight 网络丢帧、延迟及明显卡顿；码率设置不等于实际流量。选择稳定不丢包且延迟没有恶化的较小值。容量更大不会自动提高吞吐，也不能修复持续处理能力不足。
+保留 hyl.4 的可调 macOS BPF 接收缓冲、IPv6 修复和原配置存储位置。GUI 标题及运行时版本明确标记验证版；应用标识相同，升级会替换原应用，不能把两个版本当成独立应用同时运行。安装前导出配置、保留旧安装包；按原配置测试，先不要同时改变 BPF 大小、码率或路由设置。
 
-本版基于官方 nightly `99db92a3`，保留 PR #2256 的 FakeTCP IPv6 套接字修复（`6649c35`）、`-hyl.2` 的 Darwin BPF 4 字节对齐修复及 `-hyl.3` 的按内核实际大小读取修复。内核版本包含 `-hyl.4`。
+回归测试覆盖 ACK、SACK、序号回绕、缓存过期和填充过滤；另以 IPv4/IPv6 模拟实际 FakeTCP → 帧解码路径，确认填充后两帧正常数据仍可读取，真实 RST 仍关闭连接。保留此前 BPF ABI、批量读取、真实描述符大小与配置测试。这些检查不能证明所有实际网络问题已经解决。
 
-仅构建 Windows x64 与 Apple Silicon Mac 的 Core/CLI/GUI，不构建 Intel Mac。构建、配置与界面测试、IPv4/IPv6 套接字测试、Mac BPF ABI/批量解析/真实描述符大小测试以及包校验全部通过后才发布。原生测试打开未绑定接口的 BPF 描述符，不采集网络数据；它不能替代用户实际串流验证。
+测试步骤见测试分支的 [HYL-VALIDATION.md](https://github.com/xorryk/EasyTier-HYL/blob/hyl-faketcp-validation/HYL-VALIDATION.md)，Core ZIP 也包含该文档。此前 hyl.4 发布保留在 [hyl-nightly-20261017-r7](https://github.com/xorryk/EasyTier-HYL/releases/tag/hyl-nightly-20261017-r7)，可回退。新旧版本使用相同配置格式。
 
-Mac 应用采用 ad-hoc 签名，未经 Apple 公证；Windows 程序未添加代码签名。升级前导出配置并完全退出旧应用。现有 Windows `-hyl.1` 可继续与新版 Mac 联机，但旧版本的配置编辑器不认识这个新增字段；请用新版 Mac GUI 或 TOML 修改它。
-
-此版本不强制选择 FakeTCP，也不保证特定码率或绕过运营商 QoS。`BUILD-INFO-*.json` 记录源码、版本及哈希，`SHA256SUMS.txt` 用于校验下载。
+Mac 为 ad-hoc 签名，未经 Apple 公证；Windows 可执行文件未添加代码签名。`BUILD-INFO-*.json` 包含基线、补丁、源码提交及文件哈希，`SHA256SUMS.txt` 用于校验下载。本测试版不保证零丢包、不取消正常断线检测，也不强制禁用中转。

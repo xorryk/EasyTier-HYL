@@ -1,5 +1,9 @@
 # EasyTier HYL personal build
 
+**当前分支为独立验证版 `hyl-faketcp-validation`，内核标记 `-hyl.5-test.1`。** 以 hyl.4 `1624c81d9f47e841fcb6828958874037194eb476` 为基线，适配 PR #2243 `4c0a313ad15d0d12c91999648c96cdb489dd7c1b` 的 ACK/SACK、握手状态及全零填充包过滤修复。上游作者为 Max-Sum，来源见 <https://github.com/EasyTier/EasyTier/pull/2243>；补丁来源和完整提交记入构建清单。自动化测试通过不代表实际串流问题已解决。
+
+新增异常事件计数和解析错误的连接标识，验证方法及回退步骤见 [HYL-VALIDATION.md](HYL-VALIDATION.md)。GUI 标题为 `EasyTier HYL - FakeTCP Validation test.1`，应用标识及配置格式与 hyl.4 相同。工作流 `HYL FakeTCP Validation Build` 只为 Windows x64 和 Apple Silicon Mac 构建，发布标签前缀为 `hyl-validation-`；原 hyl.4 分支和发布保留。以下记录为此前版本演进，涉及 hyl.4 的版本标记仅描述基线。
+
 本版本基于官方 nightly `99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7`，保留该版本全部代码，再合入上游 PR #2256 的提交 `6649c35aea3769a7f1704a4ae1fe564e4f2077a9`。
 
 修复内容：FakeTCP 主动连接按远端地址选择 IPv4 或 IPv6 套接字及绑定地址，避免 Mac 连接 IPv6 对端时因错误地址族而报错 47。原作者及补丁来源保留在 Git 提交中。

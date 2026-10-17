@@ -73,6 +73,12 @@ impl<R> FramedReader<R> {
         }
 
         if body_len < PEER_MANAGER_HEADER_SIZE {
+            tracing::warn!(
+                declared_body_len = body_len,
+                buffered_bytes = buf.len(),
+                zero_length_header = body_len == 0,
+                "HYL validation: rejected short framed packet"
+            );
             return Some(Err(TunnelError::InvalidPacket("body too short".to_owned())));
         }
 

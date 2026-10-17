@@ -12,6 +12,9 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 NIGHTLY = "99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7"
 PATCH = "6649c35aea3769a7f1704a4ae1fe564e4f2077a9"
+BASELINE = "1624c81d9f47e841fcb6828958874037194eb476"
+VALIDATION_PATCH = "4c0a313ad15d0d12c91999648c96cdb489dd7c1b"
+VERSION_MARKER = "-hyl.5-test.1"
 PLATFORMS = ("windows-x86_64", "macos-aarch64")
 
 
@@ -32,10 +35,10 @@ def package(args):
     core = release_dir / ("easytier-core" + suffix)
     cli = release_dir / ("easytier-cli" + suffix)
     version = output(str(core), "--version")
-    if "-hyl.4" not in version:
+    if VERSION_MARKER not in version:
         raise RuntimeError("Core binary is missing the HYL version marker")
     cli_version = output(str(cli), "--version")
-    if "-hyl.4" not in cli_version:
+    if VERSION_MARKER not in cli_version:
         raise RuntimeError("CLI binary is missing the HYL version marker")
 
     prefix = f"EasyTier-HYL-{args.release}-{args.platform}"
@@ -43,7 +46,7 @@ def package(args):
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
         for binary in (core, cli):
             bundle.write(binary, binary.name)
-        for filename in ("LICENSE", "HYL-BUILD.md"):
+        for filename in ("LICENSE", "HYL-BUILD.md", "HYL-VALIDATION.md"):
             bundle.write(ROOT / filename, filename)
         if suffix:
             drivers = ROOT / "easytier" / "third_party" / "x86_64"
@@ -68,6 +71,10 @@ def package(args):
         "upstream_nightly": NIGHTLY,
         "upstream_pr": 2256,
         "upstream_patch": PATCH,
+        "baseline_hyl_commit": BASELINE,
+        "validation_pr": 2243,
+        "validation_patch": VALIDATION_PATCH,
+        "channel": "validation-only",
         "source_commit": output("git", "rev-parse", "HEAD"),
         "core_version": version,
         "cli_version": cli_version,
@@ -76,9 +83,12 @@ def package(args):
         "signing": "unsigned" if suffix else "ad-hoc; not Apple notarized",
         "validation": (
             "IPv4 and IPv6 connector socket selection tests passed; "
+            "FakeTCP ACK/SACK, handshake-state and zero-fill regression tests passed; "
+            "IPv4/IPv6 FakeTCP-to-framed-reader continuity and real reset tests passed; "
+            "framed transport invalid-packet rejection tests passed; "
             + ("Darwin BPF ABI, batched parsing and configurable native buffer tests passed" if not suffix else "BPF setting is macOS-only")
         ),
-        "network_validation": "Real Windows-to-Mac FakeTCP connectivity still requires user testing",
+        "network_validation": "NOT YET VERIFIED: real Windows-to-Mac streaming stability must be compared with hyl.4",
         "files": {file.name: sha256(file) for file in (archive, installer)},
     }
     manifest = destination / f"BUILD-INFO-{args.platform}.json"
@@ -94,8 +104,13 @@ def verify(directory):
         metadata = json.loads((directory / f"BUILD-INFO-{platform}.json").read_text(encoding="utf-8"))
         if metadata["platform"] != platform or metadata["upstream_nightly"] != NIGHTLY:
             raise RuntimeError(f"Unexpected build provenance for {platform}")
-        if metadata["upstream_patch"] != PATCH or "-hyl.4" not in metadata["core_version"]:
+        if metadata["upstream_patch"] != PATCH or VERSION_MARKER not in metadata["core_version"] or VERSION_MARKER not in metadata["cli_version"]:
             raise RuntimeError(f"Missing patch or version marker for {platform}")
+        if (metadata.get("baseline_hyl_commit") != BASELINE
+                or metadata.get("validation_patch") != VALIDATION_PATCH
+                or metadata.get("validation_pr") != 2243
+                or metadata.get("channel") != "validation-only"):
+            raise RuntimeError(f"Missing validation provenance for {platform}")
         source_commits.add(metadata["source_commit"])
         releases.add(metadata["release"])
         if len(metadata["files"]) != 2:
@@ -106,6 +121,9 @@ def verify(directory):
                 raise RuntimeError(f"Artifact missing or checksum mismatch: {name}")
     if len(source_commits) != 1 or len(releases) != 1:
         raise RuntimeError("Platform builds do not match the same source/release")
+    expected_source = os.environ.get("GITHUB_SHA")
+    if expected_source and source_commits != {expected_source}:
+        raise RuntimeError("Artifacts do not match the workflow source commit")
     print("Verified two platform builds, four packages, and all recorded SHA-256 hashes.")
 
 

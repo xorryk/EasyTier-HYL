@@ -1296,6 +1296,8 @@ impl PeerConn {
         let close_event_notifier = self.close_event_notifier.clone();
         let ctrl_sender = self.ctrl_resp_sender.clone();
         let conn_info_for_instrument = self.get_conn_info();
+        let recv_peer_id = self.get_peer_id();
+        let recv_conn_id = self.conn_id;
         let context = self.context.clone();
         let ingress = PeerPacketIngress::Peer {
             peer_id: self.get_peer_id(),
@@ -1316,7 +1318,12 @@ impl PeerConn {
                 let mut task_ret = Ok(());
                 while let Some(ret) = stream.next().await {
                     if ret.is_err() {
-                        tracing::error!(error = ?ret, "peer conn recv error");
+                        tracing::error!(
+                            error = ?ret,
+                            peer_id = recv_peer_id,
+                            conn_id = %recv_conn_id,
+                            "peer conn recv error"
+                        );
                         task_ret = Err(ret.err().unwrap());
                         break;
                     }

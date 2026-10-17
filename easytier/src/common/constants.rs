@@ -14,6 +14,6 @@ pub const WIN_SERVICE_WORK_DIR_REG_KEY: &str = "SOFTWARE\\EasyTier\\Service\\Wor
 pub const EASYTIER_VERSION: &str = git_version::git_version!(
     args = ["--abbrev=8", "--always", "--dirty=~"],
     prefix = concat!(env!("CARGO_PKG_VERSION"), "-"),
-    suffix = "-hyl.4",
+    suffix = "-hyl.5-test.1",
     fallback = env!("CARGO_PKG_VERSION")
 );
