@@ -288,6 +288,13 @@ mtu_help: |
   TUN设备的MTU，默认为非加密时为1380，加密时为1360。范围：400-1380
 mtu_placeholder: 留空为默认值1380
 
+faketcp_bpf_recv_buffer_kib: FakeTCP 接收缓冲（KiB，macOS）
+faketcp_bpf_recv_buffer_kib_placeholder: 默认申请至少 512 KiB
+faketcp_bpf_recv_buffer_kib_help: |
+  仅用于 macOS 原生 FakeTCP。留空申请至少 512 KiB，并保留更大的系统默认值。
+  可填写 64–32768 KiB（1024 即 1 MiB）；实际大小可能受系统限制。
+  保存并重启这条网络后生效，使用 netstat -B 核对实际 Bsize。缓冲并非越大越好。
+
 instance_recv_bps_limit: 实例接收限速
 instance_recv_bps_limit_help: |
   限制当前实例整体入站流量的总接收速率，单位为字节每秒。

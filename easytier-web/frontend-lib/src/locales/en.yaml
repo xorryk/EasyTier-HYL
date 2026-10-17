@@ -288,6 +288,13 @@ mtu_help: |
   MTU of the TUN device, default is 1380 for non-encryption, 1360 for encryption. Range:400-1380
 mtu_placeholder: Leave blank as default value 1380
 
+faketcp_bpf_recv_buffer_kib: FakeTCP receive buffer (KiB, macOS)
+faketcp_bpf_recv_buffer_kib_placeholder: "Automatic: at least 512 KiB"
+faketcp_bpf_recv_buffer_kib_help: |
+  Native macOS FakeTCP only. Leave blank to request at least 512 KiB and retain a larger system default.
+  Enter 64–32768 KiB to request an exact size (1024 = 1 MiB); the kernel may limit it.
+  Save and restart this network to apply. Check the actual Bsize with netstat -B. Larger is not always better.
+
 instance_recv_bps_limit: Instance Receive Limit
 instance_recv_bps_limit_help: |
   Limit the total receive bandwidth for the whole instance. Unit: bytes per second.

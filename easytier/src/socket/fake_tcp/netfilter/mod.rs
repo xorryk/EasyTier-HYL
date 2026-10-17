@@ -10,6 +10,7 @@ cfg_select! {
             interface_name: &str,
             src_addr: Option<SocketAddr>,
             dst_addr: SocketAddr,
+            _bpf_recv_buffer_kib: Option<u32>,
         ) -> io::Result<Arc<dyn super::stack::Tun>> {
             match linux_bpf::LinuxBpfTun::new(interface_name, src_addr, dst_addr) {
                 Ok(tun) => Ok(Arc::new(tun)),
@@ -35,8 +36,9 @@ cfg_select! {
             interface_name: &str,
             src_addr: Option<SocketAddr>,
             dst_addr: SocketAddr,
+            bpf_recv_buffer_kib: Option<u32>,
         ) -> io::Result<Arc<dyn super::stack::Tun>> {
-            match macos_bpf::MacosBpfTun::new(interface_name, src_addr, dst_addr) {
+            match macos_bpf::MacosBpfTun::new(interface_name, src_addr, dst_addr, bpf_recv_buffer_kib) {
                 Ok(tun) => Ok(Arc::new(tun)),
                 Err(e) => {
                     tracing::warn!(
@@ -60,6 +62,7 @@ cfg_select! {
             interface_name: &str,
             src_addr: Option<SocketAddr>,
             dst_addr: SocketAddr,
+            _bpf_recv_buffer_kib: Option<u32>,
         ) -> io::Result<Arc<dyn super::stack::Tun>> {
             match windivert::WinDivertTun::new(src_addr, dst_addr) {
                 Ok(tun) => Ok(Arc::new(tun)),
@@ -83,6 +86,7 @@ cfg_select! {
             interface_name: &str,
             src_addr: Option<SocketAddr>,
             dst_addr: SocketAddr,
+            _bpf_recv_buffer_kib: Option<u32>,
         ) -> io::Result<Arc<dyn super::stack::Tun>> {
             Ok(Arc::new(pnet::PnetTun::new(
                 interface_name,

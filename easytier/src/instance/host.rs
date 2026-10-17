@@ -26,6 +26,7 @@ impl NativeInstanceEnvironment {
     fn new(global_ctx: ArcGlobalCtx, runtime: Arc<NativeHostRuntime>) -> Self {
         let socket_context = SocketContext::default()
             .with_socket_mark(global_ctx.get_flags().socket_mark)
+            .with_faketcp_bpf_recv_buffer_kib(global_ctx.get_flags().faketcp_bpf_recv_buffer_kib)
             .with_netns(global_ctx.net_ns.name().map(NetNamespace::new));
         Self {
             global_ctx,

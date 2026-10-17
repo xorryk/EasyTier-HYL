@@ -158,6 +158,7 @@ mod tests {
                 ip_version: IpVersion::V6,
                 socket_mark: Some(0x01020304),
                 netns: Some(NetNamespace::new("netns0")),
+                ..Default::default()
             },
         );
         let encoded = encode_query(&query).unwrap();
@@ -175,6 +176,7 @@ mod tests {
                 ip_version: IpVersion::V4,
                 socket_mark: None,
                 netns: None,
+                ..Default::default()
             },
         ))
         .unwrap();

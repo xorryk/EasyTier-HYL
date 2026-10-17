@@ -628,6 +628,7 @@ mod tests {
                     ip_version: IpVersion::V4,
                     socket_mark: Some(9),
                     netns: None,
+                    ..Default::default()
                 }
             )]
         );
@@ -786,6 +787,7 @@ mod tests {
             ip_version: IpVersion::V6,
             socket_mark: Some(17),
             netns: None,
+            ..Default::default()
         };
         let resolver = CoreManualEndpointResolver::new(
             host,
@@ -892,6 +894,7 @@ mod tests {
                     ip_version: IpVersion::V4,
                     socket_mark: Some(23),
                     netns: None,
+                    ..Default::default()
                 }
             )]
         );

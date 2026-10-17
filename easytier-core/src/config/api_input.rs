@@ -72,6 +72,7 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.lazy_p2p = flags.lazy_p2p;
     result.bind_device = flags.bind_device;
     result.socket_mark = flags.socket_mark;
+    result.faketcp_bpf_recv_buffer_kib = flags.faketcp_bpf_recv_buffer_kib;
     result.no_tun = flags.no_tun;
     result.enable_exit_node = flags.enable_exit_node;
     result.relay_all_peer_rpc = flags.relay_all_peer_rpc;
@@ -500,10 +501,12 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_acl(Some(acl.clone()));
         }
 
+        crate::socket::faketcp_bpf_buffer_bytes(self.faketcp_bpf_recv_buffer_kib)?;
         cfg.patch_flags(FlagsPatch {
             dev_name: self.dev_name.clone(),
             enable_ipv6: self.disable_ipv6.map(|disabled| !disabled),
             socket_mark: self.socket_mark,
+            faketcp_bpf_recv_buffer_kib: self.faketcp_bpf_recv_buffer_kib,
             enable_encryption: self.disable_encryption.map(|disabled| !disabled),
             relay_network_whitelist: self.enable_relay_network_whitelist.map(|enabled| {
                 if enabled {
@@ -714,6 +717,60 @@ mod tests {
             networking_method: Some(NetworkingMethod::Standalone as i32),
             ..Default::default()
         }
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn faketcp_bpf_buffer_api_toml_roundtrip_and_validation() {
+        for kib in [
+            None,
+            Some(256),
+            Some(512),
+            Some(1024),
+            Some(2048),
+            Some(32768),
+        ] {
+            let input = NetworkConfig {
+                faketcp_bpf_recv_buffer_kib: kib,
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            assert_eq!(restored.get_flags().faketcp_bpf_recv_buffer_kib, kib);
+            assert_eq!(
+                NetworkConfig::new_from_config(restored)
+                    .unwrap()
+                    .faketcp_bpf_recv_buffer_kib,
+                kib
+            );
+        }
+        for kib in [0, 63, 32769, u32::MAX] {
+            let input = NetworkConfig {
+                faketcp_bpf_recv_buffer_kib: Some(kib),
+                ..standalone_config()
+            };
+            assert!(
+                input
+                    .gen_config()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("faketcp_bpf_recv_buffer_kib")
+            );
+        }
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn faketcp_bpf_buffer_form_clear_removes_old_toml_value() {
+        let original =
+            "[flags]\nfaketcp_bpf_recv_buffer_kib = 2048\ndefault_protocol = 'faketcp'\n";
+        let parsed = TomlConfigLoader::new_from_str(original).unwrap();
+        let mut input = NetworkConfig::new_from_config(parsed).unwrap();
+        input.faketcp_bpf_recv_buffer_kib = None;
+        let merged = merge_network_config_toml(original, &input).unwrap();
+        let result = TomlConfigLoader::new_from_str(&merged).unwrap();
+        assert_eq!(result.get_flags().faketcp_bpf_recv_buffer_kib, None);
+        assert_eq!(result.get_flags().default_protocol, "faketcp");
     }
 
     #[test]

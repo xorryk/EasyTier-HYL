@@ -89,9 +89,10 @@ async fn create_tun_off_runtime(
     src_addr: Option<SocketAddr>,
     dst_addr: SocketAddr,
     net_ns: NetNS,
+    bpf_recv_buffer_kib: Option<u32>,
 ) -> Result<Arc<dyn stack::Tun>, TunnelError> {
     tokio::task::spawn_blocking(move || {
-        net_ns.run(|| create_tun(&interface_name, src_addr, dst_addr))
+        net_ns.run(|| create_tun(&interface_name, src_addr, dst_addr, bpf_recv_buffer_kib))
     })
     .await
     .map_err(|e| TunnelError::InternalError(format!("faketcp create_tun task failed: {e}")))?
@@ -100,6 +101,7 @@ async fn create_tun_off_runtime(
 
 pub(crate) struct FakeTcpSocketListener {
     addr: url::Url,
+    bpf_recv_buffer_kib: Option<u32>,
     os_listener: Option<tokio::net::TcpListener>,
     // interface_name -> fake tcp stack
     stack_map: DashMap<String, Arc<stack::Stack>>,
@@ -118,9 +120,10 @@ impl std::fmt::Debug for FakeTcpSocketListener {
 }
 
 impl FakeTcpSocketListener {
-    pub(crate) fn new(addr: url::Url) -> Self {
+    pub(crate) fn new(addr: url::Url, bpf_recv_buffer_kib: Option<u32>) -> Self {
         FakeTcpSocketListener {
             addr,
+            bpf_recv_buffer_kib,
             os_listener: None,
             stack_map: DashMap::new(),
             ip_to_ifname: IpToIfNameCache::new(),
@@ -193,6 +196,7 @@ impl FakeTcpSocketListener {
             None,
             local_socket_addr,
             NetNS::new(None),
+            self.bpf_recv_buffer_kib,
         )
         .await?;
         tracing::info!(
@@ -445,6 +449,7 @@ async fn connect_socket_with_cache(
     socket_mark: Option<u32>,
     ip_to_if_name: &IpToIfNameCache,
     net_ns: NetNS,
+    bpf_recv_buffer_kib: Option<u32>,
 ) -> Result<FakeTcpSocket, TunnelError> {
     let (local_addr, interface_name, mac, os_socket) = net_ns.run(|| {
         let local_ip = get_local_ip_for_destination(remote_addr.ip())
@@ -469,7 +474,14 @@ async fn connect_socket_with_cache(
         Ok::<_, TunnelError>((local_addr, interface_name, mac, os_socket))
     })?;
 
-    let tun = create_tun_off_runtime(interface_name, Some(remote_addr), local_addr, net_ns).await?;
+    let tun = create_tun_off_runtime(
+        interface_name,
+        Some(remote_addr),
+        local_addr,
+        net_ns,
+        bpf_recv_buffer_kib,
+    )
+    .await?;
     let stack = stack::Stack::new(tun, mac);
     let transport_label = faketcp_transport_label(stack.driver_type());
 
@@ -504,8 +516,16 @@ pub(crate) async fn connect_socket(
     remote_addr: SocketAddr,
     socket_mark: Option<u32>,
     net_ns: NetNS,
+    bpf_recv_buffer_kib: Option<u32>,
 ) -> Result<FakeTcpSocket, TunnelError> {
-    connect_socket_with_cache(remote_addr, socket_mark, &IpToIfNameCache::new(), net_ns).await
+    connect_socket_with_cache(
+        remote_addr,
+        socket_mark,
+        &IpToIfNameCache::new(),
+        net_ns,
+        bpf_recv_buffer_kib,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -554,7 +574,7 @@ mod tests {
             }
 
             let mut listener =
-                FakeTcpSocketListener::new("faketcp://0.0.0.0:31011".parse().unwrap());
+                FakeTcpSocketListener::new("faketcp://0.0.0.0:31011".parse().unwrap(), None);
             listener.listen().await.unwrap();
             let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
 
@@ -567,10 +587,14 @@ mod tests {
                 socket.write_all(b"pong").await.unwrap();
             });
 
-            let mut socket =
-                connect_socket("127.0.0.1:31011".parse().unwrap(), None, NetNS::new(None))
-                    .await
-                    .unwrap();
+            let mut socket = connect_socket(
+                "127.0.0.1:31011".parse().unwrap(),
+                None,
+                NetNS::new(None),
+                None,
+            )
+            .await
+            .unwrap();
             server_ready_rx.await.unwrap();
             socket.write_all(b"ping").await.unwrap();
             let mut response = [0; 4];

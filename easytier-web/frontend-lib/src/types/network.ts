@@ -60,10 +60,12 @@ export type NetworkConfig = Omit<
   | 'instance_id'
   | 'instance_recv_bps_limit'
   | 'mtu'
+  | 'faketcp_bpf_recv_buffer_kib'
   | 'networking_method'
 > & {
   instance_id: string
   mtu: number | null
+  faketcp_bpf_recv_buffer_kib: number | null
   instance_recv_bps_limit: number | string | null
   networking_method: NetworkingMethod | string
   /// Form-only field: an admin-issued credential secret for joining as a
@@ -205,6 +207,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_socks5: false,
     socks5_port: 1080,
     mtu: null,
+    faketcp_bpf_recv_buffer_kib: null,
     instance_recv_bps_limit: null,
     mapped_listeners: [],
     port_forwards: [],
@@ -365,6 +368,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
 
   applyNetworkingMethod(normalized, { fillPeerUrlsFromPeers: true })
   normalized.mtu = normalizeNumberForInput(normalized.mtu)
+  normalized.faketcp_bpf_recv_buffer_kib = normalizeNumberForInput(normalized.faketcp_bpf_recv_buffer_kib)
   normalized.instance_recv_bps_limit = normalizeUint64ForInput(
     normalized.instance_recv_bps_limit as any,
   )
@@ -402,6 +406,7 @@ export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
 
   applyNetworkingMethod(backend)
   backend.mtu = normalizeNumberForInput(config.mtu) ?? undefined
+  backend.faketcp_bpf_recv_buffer_kib = normalizeNumberForInput(config.faketcp_bpf_recv_buffer_kib) ?? undefined
   backend.instance_recv_bps_limit = toBackendUint64(config.instance_recv_bps_limit)
   if (config.acl === undefined || isAclEmpty(config.acl)) {
     backend.acl = undefined

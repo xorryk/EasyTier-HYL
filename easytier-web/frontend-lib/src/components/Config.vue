@@ -479,6 +479,19 @@ function removeVpnPortalClient(index: number) {
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <div class="flex">
+                    <label for="faketcp_bpf_recv_buffer_kib">{{ t('faketcp_bpf_recv_buffer_kib') }}</label>
+                  </div>
+                  <InputNumber input-id="faketcp_bpf_recv_buffer_kib" v-model="curNetwork.faketcp_bpf_recv_buffer_kib"
+                    aria-describedby="faketcp_bpf_recv_buffer_kib-help" :format="false"
+                    :placeholder="t('faketcp_bpf_recv_buffer_kib_placeholder')"
+                    :min="64" :max="32768" :max-fraction-digits="0" fluid />
+                  <small id="faketcp_bpf_recv_buffer_kib-help">{{ t('faketcp_bpf_recv_buffer_kib_help') }}</small>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
                     <label for="instance_recv_bps_limit">{{ t('instance_recv_bps_limit') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center"
                       v-tooltip="t('instance_recv_bps_limit_help')"></span>

@@ -173,6 +173,7 @@ impl CoreInstanceConfig {
         host: &CoreInstanceHostConfig,
     ) -> anyhow::Result<Self> {
         let flags = host.runtime_flags(config.get_flags());
+        crate::socket::faketcp_bpf_buffer_bytes(flags.faketcp_bpf_recv_buffer_kib)?;
         let instance_id = config.get_id();
         let identity: crate::config::NetworkIdentity = config.get_network_identity().into();
         let managed_credentials = config.get_managed_credentials();
@@ -184,6 +185,7 @@ impl CoreInstanceConfig {
         let network_name = identity.network_name.clone();
         let socket_context = SocketContext::default()
             .with_socket_mark(flags.socket_mark)
+            .with_faketcp_bpf_recv_buffer_kib(flags.faketcp_bpf_recv_buffer_kib)
             .with_netns(config.get_netns().map(NetNamespace::new));
         let hostname = match config.get_hostname() {
             hostname if !hostname.is_empty() => hostname,
@@ -415,6 +417,59 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     use super::*;
+
+    #[test]
+    fn faketcp_bpf_buffer_reaches_connectors_and_listeners_per_instance() {
+        for kib in [256, 512, 1024, 2048] {
+            let config = TomlConfig::new_from_str(&format!(
+                "[flags]\nfaketcp_bpf_recv_buffer_kib = {kib}\n"
+            ))
+            .unwrap();
+            let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+            let connectivity = normalized.connectivity;
+            assert_eq!(
+                connectivity
+                    .manual
+                    .tcp_bind
+                    .context
+                    .faketcp_bpf_recv_buffer_kib,
+                Some(kib)
+            );
+            assert_eq!(
+                connectivity
+                    .direct
+                    .tcp_bind
+                    .context
+                    .faketcp_bpf_recv_buffer_kib,
+                Some(kib)
+            );
+            assert_eq!(
+                connectivity
+                    .listeners
+                    .unwrap()
+                    .socket_context
+                    .faketcp_bpf_recv_buffer_kib,
+                Some(kib)
+            );
+        }
+        let default = CoreInstanceConfig::from_toml(&TomlConfig::default()).unwrap();
+        assert_eq!(
+            default
+                .connectivity
+                .manual
+                .tcp_bind
+                .context
+                .faketcp_bpf_recv_buffer_kib,
+            None
+        );
+        for kib in [0, 63, 32769, u32::MAX] {
+            let config = TomlConfig::new_from_str(&format!(
+                "[flags]\nfaketcp_bpf_recv_buffer_kib = {kib}\n"
+            ))
+            .unwrap();
+            assert!(CoreInstanceConfig::from_toml(&config).is_err());
+        }
+    }
 
     #[test]
     fn dhcp_initial_routes_ignore_static_addresses_of_managed_families() {

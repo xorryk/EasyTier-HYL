@@ -401,6 +401,22 @@ async function setInput(wrapper: VueWrapper, selector: string, value: string) {
 }
 
 describe('Config.vue network config projection', () => {
+  it('saves, reloads and clears the macOS FakeTCP receive buffer', async () => {
+    const { curNetwork, wrapper } = mountConfig()
+    await nextTick()
+    expect(input(wrapper, '#faketcp_bpf_recv_buffer_kib').value).toBe('')
+    for (const kib of [256, 512, 1024, 2048]) {
+      await setInput(wrapper, '#faketcp_bpf_recv_buffer_kib', String(kib))
+      const backend = toBackendNetworkConfig(curNetwork)
+      expect(backend.faketcp_bpf_recv_buffer_kib).toBe(kib)
+      expect(normalizeNetworkConfig(backend).faketcp_bpf_recv_buffer_kib).toBe(kib)
+    }
+    await setInput(wrapper, '#faketcp_bpf_recv_buffer_kib', '')
+    const backend = toBackendNetworkConfig(curNetwork)
+    expect(backend.faketcp_bpf_recv_buffer_kib).toBeUndefined()
+    expect(normalizeNetworkConfig(backend).faketcp_bpf_recv_buffer_kib).toBeNull()
+  })
+
   it('projects config values into the visible form controls', async () => {
     const { curNetwork, wrapper } = mountConfig()
     await nextTick()

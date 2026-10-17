@@ -33,6 +33,7 @@ impl ExternalListenerFactory<AcceptedTransport<RuntimeTcpSocket>>
             "faketcp" => Box::new(RuntimeFakeTcpSocketListener::new(
                 request.url,
                 NetNS::from_socket_context(&request.socket_context),
+                request.socket_context.faketcp_bpf_recv_buffer_kib,
             )),
             #[cfg(unix)]
             "unix" => Box::new(RuntimeUnixStreamListener::new(request.url)),
@@ -120,10 +121,10 @@ struct RuntimeFakeTcpSocketListener {
 
 #[cfg(feature = "faketcp")]
 impl RuntimeFakeTcpSocketListener {
-    fn new(url: url::Url, net_ns: NetNS) -> Self {
+    fn new(url: url::Url, net_ns: NetNS, bpf_recv_buffer_kib: Option<u32>) -> Self {
         Self {
             net_ns,
-            inner: crate::socket::fake_tcp::FakeTcpSocketListener::new(url),
+            inner: crate::socket::fake_tcp::FakeTcpSocketListener::new(url, bpf_recv_buffer_kib),
         }
     }
 }

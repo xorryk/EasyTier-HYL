@@ -89,6 +89,11 @@ message Flags {
   // Prefer direct credential peers that already relay to a destination over
   // advertising another direct edge to the same destination.
   bool prefer_peer_relay = 44 [(easytier.flag) = { default: "false" }];
+
+  // HYL extension: native macOS FakeTCP BPF receive buffer, in KiB.
+  // Unset preserves a larger system default, with a 512 KiB minimum target.
+  // An explicit 64..32768 KiB value also permits reducing the buffer for tests.
+  optional uint32 faketcp_bpf_recv_buffer_kib = 50001 [(easytier.flag) = { form: true }];
 }
 
 

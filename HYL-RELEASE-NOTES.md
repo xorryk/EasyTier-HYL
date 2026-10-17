@@ -1,20 +1,26 @@
-macOS 原生 FakeTCP 之前沿用 BPF 的 4 KiB 接收缓冲，突发流量可能在交给 EasyTier 之前溢出。本版在绑定接口前为本程序申请 512 KiB，并以内核实际接受的大小读取数据，避免被系统限制时使用错误的读取长度。保留立即读取模式和更大的已有默认值；不修改全局系统参数。
+macOS 原生 FakeTCP 新增可调接收缓冲。此前 BPF 沿用系统的 4 KiB 默认值，突发收包可能溢出；本版保留至少申请 512 KiB 的默认行为，同时允许在高级设置中调节，便于比较不同大小下的丢包与延迟。
 
-本版仍基于官方 nightly `99db92a3`，保留 PR #2256 的 FakeTCP IPv6 套接字修复（`6649c35`）及 `-hyl.2` 的 Darwin BPF 4 字节对齐修复。
+GUI 高级设置新增 **FakeTCP 接收缓冲（KiB，macOS）**。也可在 TOML 现有 `[flags]` 中添加：
 
-- Core/CLI 版本包含 `-hyl.3`；GUI 窗口标题含 `EasyTier HYL`。
-- Windows x64：Core/CLI ZIP（含驱动）及 GUI 安装程序。
-- Apple Silicon Mac：GUI DMG 及 Core/CLI ZIP；不构建 Intel Mac。
-- 两个平台的构建、IPv4/IPv6 套接字测试和包完整性检查通过后，才发布本版本。
-- Mac 验证系统 SDK 的 BPF ABI、批量记录解析，并在真实 BPF 描述符上验证从 4 KiB 扩容及内核返回的大小。
-- 本次运行逻辑修改仅涉及 macOS；现有 `-hyl.1` Windows 内核可继续用于对照测试。
+```toml
+faketcp_bpf_recv_buffer_kib = 1024
+```
 
-更新 Mac 后彻底退出旧应用，再打开新版并启动网络。使用 `netstat -B` 查看 EasyTier 行：默认情况下 `Bsize` 应为 `524288`；连续两次记录的 `RDrop` 增量可用于检查是否仍有本地 BPF 丢包。旧连接不会自动更换缓冲大小。
+- `512` = 512 KiB；`1024` = 1 MiB；`2048` = 2 MiB。范围为 64–32768 KiB。
+- 留空或删除该项：申请至少 512 KiB，并保留更大的系统默认值。
+- 明确填写：申请该大小，包括缩小已有默认值；内核可能限制或拒绝申请。
+- 保存并停止、重新启动这条网络后生效；不需要为每个数值重新构建。
+- 仅影响本机原生 macOS FakeTCP。Windows、其他隧道协议及系统全局 `sysctl` 不受该设置影响。
+- 保留立即读取模式。日志记录申请值和内核实际值；读取缓冲按实际值分配，避免大小不符导致读取失败。
 
-Mac 应用使用 ad-hoc 签名，未经 Apple 公证；Windows 程序未添加代码签名。安装前导出配置并退出旧程序。程序标识及配置存储位置保持兼容。
+运行 `netstat -B` 核对 EasyTier 行的 `Bsize`：1 MiB 应显示 `1048576`，2 MiB 应显示 `2097152`。仅填写数值不能证明已经生效；若受限，日志会警告。BPF 描述符可能在第一次 FakeTCP 连接建立时才创建。
 
-原生缓冲测试验证代码与 macOS 内核的交互；实际高码率串流仍需端到端测试。本版不强制选择 FakeTCP，也不保证特定码率或绕过运营商 QoS；虚拟 IPv4 地址可以继续保留。
+建议先比较 512 KiB、1 MiB、2 MiB，使用相同的分辨率、帧率、编码和持续动态场景。每档重复测量，观察 `RDrop` 增量、Moonlight 网络丢帧、延迟及明显卡顿；码率设置不等于实际流量。选择稳定不丢包且延迟没有恶化的较小值。容量更大不会自动提高吞吐，也不能修复持续处理能力不足。
 
-依据：[Apple XNU 的 BPF 缓冲及 ioctl 实现](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/bpf.c)。
+本版基于官方 nightly `99db92a3`，保留 PR #2256 的 FakeTCP IPv6 套接字修复（`6649c35`）、`-hyl.2` 的 Darwin BPF 4 字节对齐修复及 `-hyl.3` 的按内核实际大小读取修复。内核版本包含 `-hyl.4`。
 
-`BUILD-INFO-*.json` 记录源码、运行时版本及哈希；`SHA256SUMS.txt` 用于校验下载。对应源码可在本 Release 标签下载。
+仅构建 Windows x64 与 Apple Silicon Mac 的 Core/CLI/GUI，不构建 Intel Mac。构建、配置与界面测试、IPv4/IPv6 套接字测试、Mac BPF ABI/批量解析/真实描述符大小测试以及包校验全部通过后才发布。原生测试打开未绑定接口的 BPF 描述符，不采集网络数据；它不能替代用户实际串流验证。
+
+Mac 应用采用 ad-hoc 签名，未经 Apple 公证；Windows 程序未添加代码签名。升级前导出配置并完全退出旧应用。现有 Windows `-hyl.1` 可继续与新版 Mac 联机，但旧版本的配置编辑器不认识这个新增字段；请用新版 Mac GUI 或 TOML 修改它。
+
+此版本不强制选择 FakeTCP，也不保证特定码率或绕过运营商 QoS。`BUILD-INFO-*.json` 记录源码、版本及哈希，`SHA256SUMS.txt` 用于校验下载。

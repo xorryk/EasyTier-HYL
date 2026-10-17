@@ -758,11 +758,16 @@ fn bpf_buffer_len(raw_fd: libc::c_int) -> io::Result<libc::c_uint> {
     Ok(buf_len)
 }
 
-fn configure_bpf_receive_buffer(raw_fd: libc::c_int) -> io::Result<libc::c_uint> {
+fn configure_bpf_receive_buffer(
+    raw_fd: libc::c_int,
+    bpf_recv_buffer_kib: Option<u32>,
+) -> io::Result<libc::c_uint> {
+    let explicit_buf_len = easytier_core::socket::faketcp_bpf_buffer_bytes(bpf_recv_buffer_kib)?;
     let initial_buf_len = bpf_buffer_len(raw_fd)?;
-    let requested_buf_len = initial_buf_len.max(BPF_RECEIVE_BUFFER_LEN);
-    // BIOCSBLEN must run before BIOCSETIF. Do not reduce a larger system default.
-    if initial_buf_len < requested_buf_len {
+    let requested_buf_len = explicit_buf_len.unwrap_or(initial_buf_len.max(BPF_RECEIVE_BUFFER_LEN));
+    // BIOCSBLEN must run before BIOCSETIF. Explicit values may reduce a larger
+    // system default, so controlled comparisons use the requested size.
+    if initial_buf_len != requested_buf_len {
         let mut negotiated_buf_len = requested_buf_len;
         if let Err(err) = unsafe {
             ioctl_ptr(
@@ -773,22 +778,25 @@ fn configure_bpf_receive_buffer(raw_fd: libc::c_int) -> io::Result<libc::c_uint>
         } {
             warn!(
                 ?err,
-                requested_buf_len, "MacosBpfTun could not enlarge BPF buffer"
+                requested_buf_len, "MacosBpfTun could not set BPF buffer"
             );
         }
     }
     // The kernel can clamp the request or reject it. A BPF read must use the
     // actual buffer size, not the requested size, or Darwin returns EINVAL.
     let actual_buf_len = bpf_buffer_len(raw_fd)?;
-    if actual_buf_len < requested_buf_len {
+    if actual_buf_len != requested_buf_len {
         warn!(
             requested_buf_len,
-            actual_buf_len, "MacosBpfTun BPF buffer is below target"
+            actual_buf_len, "MacosBpfTun BPF buffer differs from requested size"
         );
     }
     info!(
         initial_buf_len,
-        requested_buf_len, actual_buf_len, "MacosBpfTun receive buffer configured"
+        ?bpf_recv_buffer_kib,
+        requested_buf_len,
+        actual_buf_len,
+        "MacosBpfTun receive buffer configured"
     );
     Ok(actual_buf_len)
 }
@@ -806,11 +814,12 @@ impl MacosBpfTun {
         interface_name: &str,
         src_addr: Option<SocketAddr>,
         dst_addr: SocketAddr,
+        bpf_recv_buffer_kib: Option<u32>,
     ) -> io::Result<Self> {
         let fd = open_bpf_device()?;
         let raw_fd = fd.as_raw_fd();
 
-        let buf_len = configure_bpf_receive_buffer(raw_fd)?;
+        let buf_len = configure_bpf_receive_buffer(raw_fd, bpf_recv_buffer_kib)?;
 
         let mut immediate: libc::c_uint = 1;
         unsafe {
@@ -1185,19 +1194,32 @@ mod tests {
 
         let mut max_buf_len: libc::c_int = 0;
         let mut sysctl_len = std::mem::size_of_val(&max_buf_len);
-        let result = unsafe {
+        let mut result = unsafe {
             libc::sysctlbyname(
-                c"debug.bpf_maxbufsize".as_ptr(),
+                c"debug.bpf_bufsize_cap".as_ptr(),
                 (&mut max_buf_len as *mut libc::c_int).cast(),
                 &mut sysctl_len,
                 std::ptr::null_mut(),
                 0,
             )
         };
+        // Older Darwin releases limit BIOCSBLEN with maxbufsize instead.
+        if result != 0 {
+            sysctl_len = std::mem::size_of_val(&max_buf_len);
+            result = unsafe {
+                libc::sysctlbyname(
+                    c"debug.bpf_maxbufsize".as_ptr(),
+                    (&mut max_buf_len as *mut libc::c_int).cast(),
+                    &mut sysctl_len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+        }
         assert_eq!(result, 0, "read the kernel's BPF size limit");
         assert!(max_buf_len > 4096, "test requires room to enlarge BPF");
 
-        let buf_len = configure_bpf_receive_buffer(fd.as_raw_fd()).unwrap();
+        let buf_len = configure_bpf_receive_buffer(fd.as_raw_fd(), None).unwrap();
         assert_eq!(buf_len, BPF_RECEIVE_BUFFER_LEN.min(max_buf_len as u32));
         let mut reported_buf_len: libc::c_uint = 0;
         unsafe {
@@ -1210,6 +1232,30 @@ mod tests {
         .expect("query the kernel independently of the configuration helper");
         assert_eq!(buf_len, reported_buf_len, "reader must use the kernel size");
         println!("BPF receive buffer: {small_buf_len} -> {buf_len} bytes");
+
+        // Exercise a decrease as well as 1/2 MiB requests on the real kernel.
+        // Merely using max(initial, requested) would make the decrease fail.
+        for kib in [256, 1024, 2048, 512] {
+            let actual = configure_bpf_receive_buffer(fd.as_raw_fd(), Some(kib)).unwrap();
+            assert_eq!(actual, (kib * 1024).min(max_buf_len as u32));
+            let mut reported: libc::c_uint = 0;
+            unsafe {
+                ioctl_ptr(
+                    fd.as_raw_fd(),
+                    ior::<libc::c_uint>(BPF_GROUP, BIOCGBLEN_NUM),
+                    &mut reported,
+                )
+            }
+            .unwrap();
+            assert_eq!(actual, reported);
+            // Unset keeps larger defaults, but still requests at least 512 KiB.
+            let automatic = configure_bpf_receive_buffer(fd.as_raw_fd(), None).unwrap();
+            assert_eq!(
+                automatic,
+                actual.max(BPF_RECEIVE_BUFFER_LEN).min(max_buf_len as u32)
+            );
+            println!("BPF requested {kib} KiB, actual {actual} bytes; automatic {automatic}");
+        }
     }
 
     // Encode the Darwin ABI independently of the production alignment helper:

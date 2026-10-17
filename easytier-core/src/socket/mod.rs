@@ -76,6 +76,9 @@ pub struct SocketContext {
     pub ip_version: IpVersion,
     pub socket_mark: Option<u32>,
     pub netns: Option<NetNamespace>,
+    /// Native macOS FakeTCP only; not part of the portable WASI socket ABI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faketcp_bpf_recv_buffer_kib: Option<u32>,
 }
 
 impl SocketContext {
@@ -97,6 +100,11 @@ impl SocketContext {
         self.netns = netns;
         self
     }
+
+    pub fn with_faketcp_bpf_recv_buffer_kib(mut self, kib: Option<u32>) -> Self {
+        self.faketcp_bpf_recv_buffer_kib = kib;
+        self
+    }
 }
 
 impl Default for SocketContext {
@@ -105,6 +113,41 @@ impl Default for SocketContext {
             ip_version: IpVersion::Both,
             socket_mark: None,
             netns: None,
+            faketcp_bpf_recv_buffer_kib: None,
+        }
+    }
+}
+
+/// Validate before starting a network or allocating native receive buffers.
+/// The kernel can impose a smaller limit; the native backend reads it back.
+pub fn faketcp_bpf_buffer_bytes(kib: Option<u32>) -> std::io::Result<Option<u32>> {
+    kib.map(|kib| {
+        if !(64..=32768).contains(&kib) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "faketcp_bpf_recv_buffer_kib must be an integer from 64 to 32768 KiB, or omitted",
+            ));
+        }
+        Ok(kib * 1024)
+    })
+    .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn faketcp_bpf_buffer_rejects_invalid_sizes_and_converts_kib() {
+        assert_eq!(faketcp_bpf_buffer_bytes(None).unwrap(), None);
+        for kib in [64, 256, 512, 1024, 2048, 32768] {
+            assert_eq!(
+                faketcp_bpf_buffer_bytes(Some(kib)).unwrap(),
+                Some(kib * 1024)
+            );
+        }
+        for kib in [0, 63, 32769, u32::MAX] {
+            assert!(faketcp_bpf_buffer_bytes(Some(kib)).is_err());
         }
     }
 }
