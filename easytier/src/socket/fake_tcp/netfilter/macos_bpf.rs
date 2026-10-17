@@ -56,6 +56,10 @@ const BIOCIMMEDIATE_NUM: u8 = 112;
 const BIOCSHDRCMPLT_NUM: u8 = 117;
 const BIOCSSEESENT_NUM: u8 = 119;
 
+// Darwin defaults to 4 KiB, which holds only a few full-size packets. Keep
+// immediate mode for latency, but allow bursts to wait for the reader thread.
+const BPF_RECEIVE_BUFFER_LEN: libc::c_uint = 512 * 1024;
+
 const IOCPARM_MASK: u32 = 0x1fff;
 const IOC_VOID: u32 = 0x2000_0000;
 const IOC_OUT: u32 = 0x4000_0000;
@@ -736,6 +740,59 @@ fn set_ifreq_name(ifr: &mut libc::ifreq, interface_name: &str) -> io::Result<()>
     Ok(())
 }
 
+fn bpf_buffer_len(raw_fd: libc::c_int) -> io::Result<libc::c_uint> {
+    let mut buf_len: libc::c_uint = 0;
+    unsafe {
+        ioctl_ptr(
+            raw_fd,
+            ior::<libc::c_uint>(BPF_GROUP, BIOCGBLEN_NUM),
+            &mut buf_len,
+        )
+    }?;
+    if buf_len == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bpf buffer length is zero",
+        ));
+    }
+    Ok(buf_len)
+}
+
+fn configure_bpf_receive_buffer(raw_fd: libc::c_int) -> io::Result<libc::c_uint> {
+    let initial_buf_len = bpf_buffer_len(raw_fd)?;
+    let requested_buf_len = initial_buf_len.max(BPF_RECEIVE_BUFFER_LEN);
+    // BIOCSBLEN must run before BIOCSETIF. Do not reduce a larger system default.
+    if initial_buf_len < requested_buf_len {
+        let mut negotiated_buf_len = requested_buf_len;
+        if let Err(err) = unsafe {
+            ioctl_ptr(
+                raw_fd,
+                iowr::<libc::c_uint>(BPF_GROUP, BIOCSBLEN_NUM),
+                &mut negotiated_buf_len,
+            )
+        } {
+            warn!(
+                ?err,
+                requested_buf_len, "MacosBpfTun could not enlarge BPF buffer"
+            );
+        }
+    }
+    // The kernel can clamp the request or reject it. A BPF read must use the
+    // actual buffer size, not the requested size, or Darwin returns EINVAL.
+    let actual_buf_len = bpf_buffer_len(raw_fd)?;
+    if actual_buf_len < requested_buf_len {
+        warn!(
+            requested_buf_len,
+            actual_buf_len, "MacosBpfTun BPF buffer is below target"
+        );
+    }
+    info!(
+        initial_buf_len,
+        requested_buf_len, actual_buf_len, "MacosBpfTun receive buffer configured"
+    );
+    Ok(actual_buf_len)
+}
+
 pub struct MacosBpfTun {
     fd: OwnedFd,
     link_type: LinkType,
@@ -753,29 +810,7 @@ impl MacosBpfTun {
         let fd = open_bpf_device()?;
         let raw_fd = fd.as_raw_fd();
 
-        let mut buf_len: libc::c_uint = 0;
-        unsafe {
-            ioctl_ptr(
-                raw_fd,
-                ior::<libc::c_uint>(BPF_GROUP, BIOCGBLEN_NUM),
-                &mut buf_len,
-            )
-        }?;
-        if buf_len == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "bpf buffer length is zero",
-            ));
-        }
-
-        let mut desired_buf_len: libc::c_uint = buf_len;
-        let _ = unsafe {
-            ioctl_ptr(
-                raw_fd,
-                iowr::<libc::c_uint>(BPF_GROUP, BIOCSBLEN_NUM),
-                &mut desired_buf_len,
-            )
-        };
+        let buf_len = configure_bpf_receive_buffer(raw_fd)?;
 
         let mut immediate: libc::c_uint = 1;
         unsafe {
@@ -885,7 +920,6 @@ impl MacosBpfTun {
             },
             filter_len = bpf_insns.len(),
             buf_len,
-            desired_buf_len,
             "MacosBpfTun created"
         );
 
@@ -895,7 +929,7 @@ impl MacosBpfTun {
         let read_fd = raw_fd;
         let worker_link_type = link_type;
         let worker = std::thread::spawn(move || {
-            let mut buf = vec![0u8; desired_buf_len as usize];
+            let mut buf = vec![0u8; buf_len as usize];
             let mut wrap_fail_logs_left: u8 = 5;
             let mut bad_record_logs_left: u8 = 8;
             let mut shifted_record_logs_left: u8 = 8;
@@ -1127,7 +1161,56 @@ impl stack::Tun for MacosBpfTun {
 
 #[cfg(test)]
 mod tests {
-    use super::{BPF_RECORD_ALIGNMENT, parse_bpf_record};
+    use super::{
+        BIOCGBLEN_NUM, BIOCSBLEN_NUM, BPF_GROUP, BPF_RECEIVE_BUFFER_LEN, BPF_RECORD_ALIGNMENT,
+        configure_bpf_receive_buffer, ioctl_ptr, ior, iowr, open_bpf_device, parse_bpf_record,
+    };
+    use nix::libc;
+    use std::os::fd::AsRawFd;
+
+    #[test]
+    #[ignore = "requires permission to open /dev/bpf; CI runs this test with sudo"]
+    fn bpf_receive_buffer_negotiates_with_darwin() {
+        let fd = open_bpf_device().expect("open a real Darwin BPF descriptor");
+        let mut small_buf_len: libc::c_uint = 4096;
+        unsafe {
+            ioctl_ptr(
+                fd.as_raw_fd(),
+                iowr::<libc::c_uint>(BPF_GROUP, BIOCSBLEN_NUM),
+                &mut small_buf_len,
+            )
+        }
+        .expect("reproduce the 4 KiB default on this descriptor");
+        assert_eq!(small_buf_len, 4096);
+
+        let mut max_buf_len: libc::c_int = 0;
+        let mut sysctl_len = std::mem::size_of_val(&max_buf_len);
+        let result = unsafe {
+            libc::sysctlbyname(
+                c"debug.bpf_maxbufsize".as_ptr(),
+                (&mut max_buf_len as *mut libc::c_int).cast(),
+                &mut sysctl_len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(result, 0, "read the kernel's BPF size limit");
+        assert!(max_buf_len > 4096, "test requires room to enlarge BPF");
+
+        let buf_len = configure_bpf_receive_buffer(fd.as_raw_fd()).unwrap();
+        assert_eq!(buf_len, BPF_RECEIVE_BUFFER_LEN.min(max_buf_len as u32));
+        let mut reported_buf_len: libc::c_uint = 0;
+        unsafe {
+            ioctl_ptr(
+                fd.as_raw_fd(),
+                ior::<libc::c_uint>(BPF_GROUP, BIOCGBLEN_NUM),
+                &mut reported_buf_len,
+            )
+        }
+        .expect("query the kernel independently of the configuration helper");
+        assert_eq!(buf_len, reported_buf_len, "reader must use the kernel size");
+        println!("BPF receive buffer: {small_buf_len} -> {buf_len} bytes");
+    }
 
     // Encode the Darwin ABI independently of the production alignment helper:
     // timeval32, two u32 lengths, a u16 header length, then four-byte padding.

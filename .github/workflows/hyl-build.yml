@@ -110,6 +110,16 @@ jobs:
           cargo test --locked --target "$TARGET" --package easytier \
             --features ${{ matrix.allocator }} --lib macos_bpf::tests -- --nocapture
 
+      - name: Verify BPF buffer negotiation on a real Darwin descriptor
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          cargo test --locked --target "$TARGET" --package easytier \
+            --features ${{ matrix.allocator }} --lib --no-run --message-format=json \
+            > "$RUNNER_TEMP/hyl-test-artifacts.jsonl"
+          TEST_BINARY=$(python -c 'import json,sys; rows=[json.loads(line) for line in open(sys.argv[1])]; matches=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("profile",{}).get("test") and r.get("target",{}).get("name")=="easytier" and r.get("executable")]; assert len(matches)==1,matches; print(matches[0])' "$RUNNER_TEMP/hyl-test-artifacts.jsonl")
+          sudo "$TEST_BINARY" bpf_receive_buffer_negotiates_with_darwin --ignored --nocapture
+
       - name: Build Core and CLI
         run: >-
           cargo build --locked --release --target "$TARGET"
