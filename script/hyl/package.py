@@ -14,7 +14,8 @@ NIGHTLY = "99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7"
 PATCH = "6649c35aea3769a7f1704a4ae1fe564e4f2077a9"
 BASELINE = "1624c81d9f47e841fcb6828958874037194eb476"
 VALIDATION_PATCH = "4c0a313ad15d0d12c91999648c96cdb489dd7c1b"
-VERSION_MARKER = "-hyl.5-test.1"
+RECONNECT_BASELINE = "e7f8f27ed561457c52912395f0df625377fe198d"
+VERSION_MARKER = "-hyl.5-test.2"
 PLATFORMS = ("windows-x86_64", "macos-aarch64")
 
 
@@ -74,6 +75,7 @@ def package(args):
         "baseline_hyl_commit": BASELINE,
         "validation_pr": 2243,
         "validation_patch": VALIDATION_PATCH,
+        "reconnect_baseline": RECONNECT_BASELINE,
         "channel": "validation-only",
         "source_commit": output("git", "rev-parse", "HEAD"),
         "core_version": version,
@@ -83,12 +85,13 @@ def package(args):
         "signing": "unsigned" if suffix else "ad-hoc; not Apple notarized",
         "validation": (
             "IPv4 and IPv6 connector socket selection tests passed; "
+            "address-scoped listener capture, IPv6 renumbering payload delivery, reconnect, live-old-address preservation and stale capture cleanup regression tests passed; "
             "FakeTCP ACK/SACK, handshake-state and zero-fill regression tests passed; "
             "IPv4/IPv6 FakeTCP-to-framed-reader continuity and real reset tests passed; "
             "framed transport invalid-packet rejection tests passed; "
             + ("Darwin BPF ABI, batched parsing and configurable native buffer tests passed" if not suffix else "BPF setting is macOS-only")
         ),
-        "network_validation": "NOT YET VERIFIED: real Windows-to-Mac streaming stability must be compared with hyl.4",
+        "network_validation": "NOT YET VERIFIED: real IPv6 renumbering, reconnect and Windows-to-Mac streaming must be compared with hyl.5-test.1",
         "files": {file.name: sha256(file) for file in (archive, installer)},
     }
     manifest = destination / f"BUILD-INFO-{args.platform}.json"
@@ -109,6 +112,7 @@ def verify(directory):
         if (metadata.get("baseline_hyl_commit") != BASELINE
                 or metadata.get("validation_patch") != VALIDATION_PATCH
                 or metadata.get("validation_pr") != 2243
+                or metadata.get("reconnect_baseline") != RECONNECT_BASELINE
                 or metadata.get("channel") != "validation-only"):
             raise RuntimeError(f"Missing validation provenance for {platform}")
         source_commits.add(metadata["source_commit"])

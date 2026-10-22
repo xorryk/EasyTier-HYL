@@ -1,4 +1,8 @@
-这是用于验证 FakeTCP 异常断连的 **hyl.5-test.1 测试版**。自动化检查通过后发布；实际串流稳定性尚待对照测试，不替代现有 hyl.4。
+这是用于验证 IPv6 地址变化后 FakeTCP 自动重连的 **hyl.5-test.2 测试版**，基于 test.1 `e7f8f27ed561457c52912395f0df625377fe198d`。
+
+修复监听端只按网卡名缓存收包对象的问题：WinDivert/BPF 规则绑定具体本地 IP，原实现会在同一网卡换 IPv6 后继续使用旧过滤规则，导致系统 TCP 已接入但 FakeTCP 握手持续超时。现在按网卡和本地 IP/端口分别缓存，新地址创建独立对象；仍在使用旧地址的连接保留，移除地址的空闲对象在新地址建链时回收。
+
+新增自动化测试覆盖新地址实际载荷接收、断开后再次接入、旧连接继续接收、IPv4/IPv6/端口/网卡隔离、关闭对象重建和安全清理。协议和配置格式未变，可先仅升级 Windows 监听端，与 Mac test.1 做对照。自动化检查通过后发布；真实公网 IPv6 轮换和串流稳定性仍需手动测试。test.1 发布保留：[hyl-validation-20261017-r8](https://github.com/xorryk/EasyTier-HYL/releases/tag/hyl-validation-20261017-r8)。
 
 以 hyl.4 源码 `1624c81d9f47e841fcb6828958874037194eb476` 为固定基线，适配上游 [PR #2243](https://github.com/EasyTier/EasyTier/pull/2243) 在 `4c0a313ad15d0d12c91999648c96cdb489dd7c1b` 的改动：
 

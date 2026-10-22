@@ -621,6 +621,10 @@ impl Stack {
         self.shared.is_closed() || self.reader_task.is_finished()
     }
 
+    pub fn has_active_sockets(&self) -> bool {
+        !self.shared.state.read().unwrap().tuples.is_empty()
+    }
+
     pub fn try_alloc_established_socket(
         &self,
         local_addr: SocketAddr,

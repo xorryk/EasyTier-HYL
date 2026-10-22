@@ -25,6 +25,7 @@ env:
   HYL_PATCH_SHA: 6649c35aea3769a7f1704a4ae1fe564e4f2077a9
   HYL_BASELINE_SHA: 1624c81d9f47e841fcb6828958874037194eb476
   HYL_VALIDATION_PATCH_SHA: 4c0a313ad15d0d12c91999648c96cdb489dd7c1b
+  HYL_RECONNECT_BASELINE_SHA: e7f8f27ed561457c52912395f0df625377fe198d
 
 jobs:
   build:
@@ -47,7 +48,7 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       HYL_PLATFORM: ${{ matrix.platform }}
-      HYL_RELEASE_TAG: hyl-validation-20261017-r${{ github.run_number }}
+      HYL_RELEASE_TAG: hyl-validation-20261022-r${{ github.run_number }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -60,6 +61,7 @@ jobs:
           git log --format=%B "$HYL_NIGHTLY_SHA"..HEAD | grep -F "$HYL_PATCH_SHA"
           git merge-base --is-ancestor "$HYL_BASELINE_SHA" HEAD
           git log --format=%B "$HYL_BASELINE_SHA"..HEAD | grep -F "$HYL_VALIDATION_PATCH_SHA"
+          git merge-base --is-ancestor "$HYL_RECONNECT_BASELINE_SHA" HEAD
 
       - name: Prepare upstream build tools and frontend
         uses: ./.github/actions/prepare-build
@@ -95,6 +97,12 @@ jobs:
           cargo test --locked --target "$TARGET"
           --package easytier --features ${{ matrix.allocator }}
           --lib connector_uses_ -- --nocapture
+
+      - name: Test listener address changes, payload delivery, reconnect and capture cleanup
+        run: >-
+          cargo test --locked --target "$TARGET"
+          --package easytier --features ${{ matrix.allocator }}
+          --lib listener_address_change_ -- --nocapture
 
       - name: Test FakeTCP buffer configuration round trips and runtime propagation
         run: >-
@@ -202,7 +210,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: hyl-validation-20261017-r${{ github.run_number }}
+      RELEASE_TAG: hyl-validation-20261022-r${{ github.run_number }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
@@ -225,6 +233,6 @@ jobs:
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-              --title "EasyTier HYL - FakeTCP validation test.1 (build $GITHUB_RUN_NUMBER)" \
+              --title "EasyTier HYL - FakeTCP IPv6 reconnect test.2 (build $GITHUB_RUN_NUMBER)" \
               --notes-file HYL-RELEASE-NOTES.md --prerelease
           fi

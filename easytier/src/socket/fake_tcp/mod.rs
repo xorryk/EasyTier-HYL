@@ -51,12 +51,12 @@ impl IpToIfNameCache {
         }
     }
 
-    fn reload_ip_to_ifname(&self) {
-        self.ip_to_ifname.clear();
+    fn reload_ip_to_ifname(&self) -> bool {
         let Ok(interfaces) = network_interface::NetworkInterface::show() else {
             tracing::warn!("failed to enumerate interfaces when reloading faketcp ip cache");
-            return;
+            return false;
         };
+        self.ip_to_ifname.clear();
         for iface in interfaces {
             let mac = iface.mac_addr.as_deref().and_then(|mac| {
                 parse_mac_addr(mac).or_else(|| {
@@ -68,6 +68,7 @@ impl IpToIfNameCache {
                 self.ip_to_ifname.insert(ip.ip(), (iface.name.clone(), mac));
             }
         }
+        true
     }
 
     fn get_ifname(&self, ip: &IpAddr) -> Option<(String, Option<MacAddr>)> {
@@ -99,12 +100,27 @@ async fn create_tun_off_runtime(
     .map_err(Into::into)
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ListenerStackKey {
+    interface_name: String,
+    local_addr: SocketAddr,
+}
+
+impl From<&AcceptResult> for ListenerStackKey {
+    fn from(result: &AcceptResult) -> Self {
+        Self {
+            interface_name: result.interface_name.clone(),
+            local_addr: result.local_addr,
+        }
+    }
+}
+
 pub(crate) struct FakeTcpSocketListener {
     addr: url::Url,
     bpf_recv_buffer_kib: Option<u32>,
     os_listener: Option<tokio::net::TcpListener>,
-    // interface_name -> fake tcp stack
-    stack_map: DashMap<String, Arc<stack::Stack>>,
+    // Capture filters bind a concrete local address, not just an interface.
+    stack_map: DashMap<ListenerStackKey, Arc<stack::Stack>>,
     // a cache from ip addr to interface name
     ip_to_ifname: IpToIfNameCache,
 }
@@ -172,11 +188,48 @@ impl FakeTcpSocketListener {
         &self,
         accept_result: &AcceptResult,
     ) -> Result<Arc<stack::Stack>, TunnelError> {
-        let local_socket_addr = accept_result.local_addr;
+        let key = ListenerStackKey::from(accept_result);
+        if !self.stack_map.contains_key(&key) && self.ip_to_ifname.reload_ip_to_ifname() {
+            self.prune_stacks();
+        }
+        self.get_stack_with(key, accept_result.mac, || {
+            create_tun_off_runtime(
+                accept_result.interface_name.clone(),
+                None,
+                accept_result.local_addr,
+                NetNS::new(None),
+                self.bpf_recv_buffer_kib,
+            )
+        })
+        .await
+    }
 
-        let interface_name = &accept_result.interface_name;
+    fn prune_stacks(&self) {
+        self.stack_map.retain(|key, stack| {
+            if stack.is_closed() {
+                return false;
+            }
+            let address_present = self
+                .ip_to_ifname
+                .ip_to_ifname
+                .get(&key.local_addr.ip())
+                .is_some_and(|binding| binding.0 == key.interface_name);
+            // Keep established connections on old addresses until they close.
+            address_present || stack.has_active_sockets()
+        });
+    }
 
-        if let Some(entry) = self.stack_map.get(interface_name) {
+    async fn get_stack_with<F, Fut>(
+        &self,
+        key: ListenerStackKey,
+        mac: Option<MacAddr>,
+        create_tun: F,
+    ) -> Result<Arc<stack::Stack>, TunnelError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Arc<dyn stack::Tun>, TunnelError>>,
+    {
+        if let Some(entry) = self.stack_map.get(&key) {
             let stack = entry.clone();
             drop(entry);
 
@@ -185,28 +238,16 @@ impl FakeTcpSocketListener {
             }
 
             tracing::warn!(
-                interface_name,
+                ?key,
                 "fake_tcp stack reader_task finished, recreating stack"
             );
-            self.stack_map.remove(interface_name);
+            self.stack_map.remove(&key);
         }
 
-        let tun = create_tun_off_runtime(
-            interface_name.to_string(),
-            None,
-            local_socket_addr,
-            NetNS::new(None),
-            self.bpf_recv_buffer_kib,
-        )
-        .await?;
-        tracing::info!(
-            ?local_socket_addr,
-            "create new stack with interface_name: {:?}",
-            interface_name
-        );
-        let stack = Arc::new(stack::Stack::new(tun, accept_result.mac));
-        self.stack_map
-            .insert(interface_name.to_string(), stack.clone());
+        let tun = create_tun().await?;
+        tracing::info!(?key, "create new address-bound fake_tcp stack");
+        let stack = Arc::new(stack::Stack::new(tun, mac));
+        self.stack_map.insert(key, stack.clone());
 
         Ok(stack)
     }
@@ -364,7 +405,7 @@ impl FakeTcpSocketListener {
                     interface_name = res.interface_name,
                     "fake_tcp stack closed while accepting connection, dropping accepted socket"
                 );
-                self.stack_map.remove(&res.interface_name);
+                self.stack_map.remove(&ListenerStackKey::from(&res));
                 continue;
             };
             break (res, stack, socket);
@@ -530,10 +571,217 @@ pub(crate) async fn connect_socket(
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use easytier_core::socket::SocketListener;
+    use std::sync::Mutex;
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+
+    struct AddressCapture {
+        local_addr: SocketAddr,
+        sender: flume::Sender<Option<Bytes>>,
+        receiver: flume::Receiver<Option<Bytes>>,
+    }
+
+    impl AddressCapture {
+        fn new(local_addr: SocketAddr) -> Self {
+            let (sender, receiver) = flume::unbounded();
+            Self {
+                local_addr,
+                sender,
+                receiver,
+            }
+        }
+
+        fn deliver(&self, local: SocketAddr, remote: SocketAddr, payload: &[u8]) -> bool {
+            // Model the address filter used by WinDivert/BPF, including the port.
+            if local != self.local_addr {
+                return false;
+            }
+            let frame = packet::build_tcp_packet(
+                MacAddr::default(),
+                MacAddr::default(),
+                remote,
+                local,
+                100,
+                100,
+                packet::TCP_FLAG_ACK | packet::TCP_FLAG_PSH,
+                Some(payload),
+            );
+            self.sender.send(Some(frame)).unwrap();
+            true
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl stack::Tun for AddressCapture {
+        async fn recv(&self, packet: &mut BytesMut) -> io::Result<usize> {
+            let frame = self
+                .receiver
+                .recv_async()
+                .await
+                .ok()
+                .flatten()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "test capture closed"))?;
+            packet.extend_from_slice(&frame);
+            Ok(frame.len())
+        }
+
+        fn try_send(&self, _packet: &Bytes) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn driver_type(&self) -> &'static str {
+            "address-filter-test"
+        }
+    }
+
+    async fn listener_test_stack(
+        listener: &FakeTcpSocketListener,
+        interface: &str,
+        local_addr: SocketAddr,
+        captures: &Mutex<Vec<Arc<AddressCapture>>>,
+    ) -> Arc<stack::Stack> {
+        let key = ListenerStackKey {
+            interface_name: interface.to_owned(),
+            local_addr,
+        };
+        listener
+            .get_stack_with(key, None, || async {
+                let capture = Arc::new(AddressCapture::new(local_addr));
+                captures.lock().unwrap().push(capture.clone());
+                Ok(capture as Arc<dyn stack::Tun>)
+            })
+            .await
+            .unwrap()
+    }
+
+    async fn listener_test_receive(socket: &stack::Socket, expected: &[u8]) {
+        let mut payload = BytesMut::new();
+        let length = tokio::time::timeout(Duration::from_secs(2), socket.recv(&mut payload))
+            .await
+            .expect("address-specific capture did not deliver the reconnect payload");
+        assert_eq!(length, Some(expected.len()));
+        assert_eq!(&payload[..], expected);
+    }
+
+    #[tokio::test]
+    async fn listener_address_change_delivers_payload_and_preserves_existing_connection() {
+        let listener = FakeTcpSocketListener::new("faketcp://[::]:11014".parse().unwrap(), None);
+        let captures = Mutex::new(Vec::new());
+        let old_addr = "[2001:db8:1::1]:11014".parse().unwrap();
+        let new_addr = "[2001:db8:2::1]:11014".parse().unwrap();
+        let remote = "[2001:db8:3::1]:40000".parse().unwrap();
+        let old_stack = listener_test_stack(&listener, "nic0", old_addr, &captures).await;
+        let old_socket = old_stack
+            .try_alloc_established_socket(old_addr, remote, stack::State::Established)
+            .unwrap();
+        let old_capture = captures.lock().unwrap()[0].clone();
+        assert!(old_capture.deliver(old_addr, remote, b"before change"));
+        listener_test_receive(&old_socket, b"before change").await;
+
+        let new_stack = listener_test_stack(&listener, "nic0", new_addr, &captures).await;
+        assert!(!Arc::ptr_eq(&old_stack, &new_stack));
+        assert_eq!(captures.lock().unwrap().len(), 2);
+        let new_socket = new_stack
+            .try_alloc_established_socket(new_addr, remote, stack::State::Established)
+            .unwrap();
+        let new_capture = captures.lock().unwrap()[1].clone();
+        assert!(!old_capture.deliver(new_addr, remote, b"new address"));
+        assert!(new_capture.deliver(new_addr, remote, b"new address"));
+        listener_test_receive(&new_socket, b"new address").await;
+        assert!(old_capture.deliver(old_addr, remote, b"old connection still alive"));
+        listener_test_receive(&old_socket, b"old connection still alive").await;
+
+        drop(new_socket);
+        let reconnected = listener_test_stack(&listener, "nic0", new_addr, &captures).await;
+        assert!(Arc::ptr_eq(&new_stack, &reconnected));
+        assert_eq!(captures.lock().unwrap().len(), 2);
+        let remote = "[2001:db8:3::1]:40001".parse().unwrap();
+        let socket = reconnected
+            .try_alloc_established_socket(new_addr, remote, stack::State::Established)
+            .unwrap();
+        assert!(new_capture.deliver(new_addr, remote, b"reconnected"));
+        listener_test_receive(&socket, b"reconnected").await;
+    }
+
+    #[tokio::test]
+    async fn listener_address_change_separates_address_family_port_and_interface() {
+        let listener = FakeTcpSocketListener::new("faketcp://[::]:11014".parse().unwrap(), None);
+        let captures = Mutex::new(Vec::new());
+        for (index, (interface, address)) in [
+            ("nic0", "192.0.2.1:11014"),
+            ("nic0", "192.0.2.2:11014"),
+            ("nic0", "[2001:db8::1]:11014"),
+            ("nic0", "[2001:db8::1]:11015"),
+            ("nic1", "[2001:db8::1]:11014"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let address = address.parse().unwrap();
+            let stack = listener_test_stack(&listener, interface, address, &captures).await;
+            let reused = listener_test_stack(&listener, interface, address, &captures).await;
+            assert!(Arc::ptr_eq(&stack, &reused));
+            assert_eq!(captures.lock().unwrap().len(), index + 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn listener_address_change_recreates_closed_capture_without_discarding_other_address() {
+        let listener = FakeTcpSocketListener::new("faketcp://[::]:11014".parse().unwrap(), None);
+        let captures = Mutex::new(Vec::new());
+        let first = "[2001:db8:1::1]:11014".parse().unwrap();
+        let second = "[2001:db8:2::1]:11014".parse().unwrap();
+        let closed = listener_test_stack(&listener, "nic0", first, &captures).await;
+        let other = listener_test_stack(&listener, "nic0", second, &captures).await;
+        captures.lock().unwrap()[0].sender.send(None).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !closed.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let replacement = listener_test_stack(&listener, "nic0", first, &captures).await;
+        assert!(!Arc::ptr_eq(&closed, &replacement));
+        let reused_other = listener_test_stack(&listener, "nic0", second, &captures).await;
+        assert!(Arc::ptr_eq(&other, &reused_other));
+        assert_eq!(captures.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn listener_address_change_reclaims_removed_address_only_after_connection_closes() {
+        let listener = FakeTcpSocketListener::new("faketcp://[::]:11014".parse().unwrap(), None);
+        let captures = Mutex::new(Vec::new());
+        let old_addr = "[2001:db8:1::1]:11014".parse().unwrap();
+        let current_addr: SocketAddr = "[2001:db8:2::1]:11014".parse().unwrap();
+        let old_stack = listener_test_stack(&listener, "nic0", old_addr, &captures).await;
+        let current = listener_test_stack(&listener, "nic0", current_addr, &captures).await;
+        let socket = old_stack
+            .try_alloc_established_socket(
+                old_addr,
+                "[2001:db8:3::1]:40000".parse().unwrap(),
+                stack::State::Established,
+            )
+            .unwrap();
+        listener
+            .ip_to_ifname
+            .ip_to_ifname
+            .insert(current_addr.ip(), ("nic0".to_owned(), None));
+        listener.prune_stacks();
+        assert_eq!(listener.stack_map.len(), 2);
+        assert!(!old_stack.is_closed());
+
+        drop(socket);
+        listener.prune_stacks();
+        assert_eq!(listener.stack_map.len(), 1);
+        let reused = listener_test_stack(&listener, "nic0", current_addr, &captures).await;
+        assert!(Arc::ptr_eq(&current, &reused));
+        assert_eq!(captures.lock().unwrap().len(), 2);
+    }
 
     #[test]
     fn connector_uses_ipv4_socket_bind_addr_for_ipv4_remote() {
